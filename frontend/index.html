@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Crypto Sentinel — API Tester</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>API Tester</h1>
+
+    <form id="reqForm" class="panel">
+      <div class="row controls">
+        <select id="method">
+          <option>GET</option>
+          <option>POST</option>
+          <option>PUT</option>
+          <option>PATCH</option>
+          <option>DELETE</option>
+        </select>
+        <input id="path" placeholder="/api/route or https://host/route" value="/" />
+        <button id="send">Send</button>
+      </div>
+
+      <label>Headers (JSON)</label>
+      <textarea id="headers" placeholder='{"Content-Type": "application/json"}' rows="4"></textarea>
+
+      <label>Body</label>
+      <textarea id="body" placeholder='{"example":"value"}' rows="8"></textarea>
+    </form>
+
+    <section class="panel" id="responsePanel">
+      <div class="resp-meta">
+        <span id="status">Status: —</span>
+        <button id="copyResp">Copy Body</button>
+        <button id="clear">Clear</button>
+      </div>
+
+      <div class="resp-subpanel">
+        <h3>Headers</h3>
+        <pre id="respHeaders">—</pre>
+      </div>
+
+      <div class="resp-subpanel">
+        <h3>Body</h3>
+        <pre id="respBody">—</pre>
+      </div>
+    </section>
+
+    <footer class="note">
+      Use relative paths (starting with /) to target the backend running on the same origin. If your backend is on a different host, run the frontend via a static route or enable CORS on the backend.
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
