@@ -19,9 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ /app/backend
 
 # Copy built frontend
-COPY --from=frontend-builder /app/frontend/.next /app/backend/frontend/.next
-COPY --from=frontend-builder /app/frontend/public /app/backend/frontend/public
-COPY --from=frontend-builder /app/frontend/package.json /app/backend/frontend/package.json
+# Copy the built frontend into /app/frontend so backend/main.py (which
+# computes project_root as parent.parent) can find the frontend at /app/frontend
+COPY --from=frontend-builder /app/frontend /app/frontend
 
 EXPOSE 8000
 WORKDIR /app/backend

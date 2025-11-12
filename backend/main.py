@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
@@ -10,8 +11,20 @@ os.chdir(project_root)
 
 # import routes after changing cwd so their StaticFiles(... "frontend") can find the directory
 from routes import market, technical, agents
+from data.fetch_market import fetch_ohlcv_data
+from utils import cache as cache_utils
+import asyncio
 
 app = FastAPI()
+
+# During local development allow the Next.js dev server to call the API
+app.add_middleware(
+	CORSMiddleware,
+	allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+	allow_credentials=True,
+	allow_methods=["*"],
+	allow_headers=["*"],
+)
 
 # use absolute path to the frontend folder
 frontend_dir = project_root / "frontend"
@@ -26,6 +39,31 @@ app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend"
 app.include_router(market.router, prefix="/api")
 app.include_router(technical.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
+
+
+@app.on_event("startup")
+async def preload_market_data():
+	"""Preload OHLCV for BTC and ETH into the in-memory cache on startup."""
+	try:
+		# run concurrently
+		loop = asyncio.get_event_loop()
+		tasks = [
+			loop.run_in_executor(None, fetch_ohlcv_data, "bitcoin", "usd", 90, "daily"),
+			loop.run_in_executor(None, fetch_ohlcv_data, "ethereum", "usd", 90, "daily"),
+		]
+		results = await asyncio.gather(*tasks)
+		if isinstance(results[0], dict) and results[0].get("error"):
+			# skip caching if error
+			pass
+		else:
+			cache_utils.set("BTC", results[0])
+		if isinstance(results[1], dict) and results[1].get("error"):
+			pass
+		else:
+			cache_utils.set("ETH", results[1])
+	except Exception:
+		# don't block startup on cache failures
+		pass
 
 # Serve frontend index
 @app.get("/")

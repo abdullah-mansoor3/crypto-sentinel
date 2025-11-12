@@ -8,7 +8,39 @@
 </head>
 <body>
   <main class="container">
-    <h1>API Tester</h1>
+    <h1>Crypto Sentinel — API Tester & Mini Dashboard</h1>
+
+    <section class="panel" id="miniDashboard">
+      <div class="row controls">
+        <label for="symbolSelect">Symbol</label>
+        <select id="symbolSelect">
+          <option>BTC</option>
+          <option>ETH</option>
+          <option>SOL</option>
+          <option>BNB</option>
+          <option>XRP</option>
+          <option>ADA</option>
+          <option>DOGE</option>
+        </select>
+
+        <label for="indicatorSelect">Indicator</label>
+        <select id="indicatorSelect">
+          <option value="ema">EMA (overlay)</option>
+          <option value="macd">MACD (below)</option>
+          <option value="rsi">RSI (below)</option>
+          <option value="bbands">Bollinger Bands (overlay)</option>
+        </select>
+
+        <button id="refreshBtn">Refresh</button>
+      </div>
+
+      <div class="chart-wrap">
+        <canvas id="mainChart" width="800" height="300"></canvas>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="indicatorChart" width="800" height="150"></canvas>
+      </div>
+    </section>
 
     <form id="reqForm" class="panel">
       <div class="row controls">
