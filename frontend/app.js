@@ -111,8 +111,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const payload = await fetchTechnical(symbol);
       renderCharts(payload, indicatorSelect.value);
     } catch (err) {
-      console.error('Failed to load technical data', err);
-      alert('Failed to load technical data: ' + err.message);
+      // Do not surface detailed errors in the UI. Show a generic message in the response body area.
+      try {
+        const respBodyEl = document.getElementById('respBody');
+        if (respBodyEl) respBodyEl.textContent = 'something went wrong';
+      } catch (e) {}
     }
   }
 
@@ -190,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (err) {
       statusEl.textContent = 'Status: Error';
-      respBodyEl.textContent = String(err);
+      respBodyEl.textContent = 'something went wrong';
       respHeadersEl.textContent = '—';
     }
   }
