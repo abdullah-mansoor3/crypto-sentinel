@@ -53,17 +53,22 @@ def _get_chroma_client():
 def _get_embedding_function():
     # allow disabling embeddings in development via config.EMBEDDINGS_ENABLED
     if not EMBEDDINGS_ENABLED:
+        logger.debug("Embeddings disabled (EMBEDDINGS_ENABLED=false); using DummyEmbedding")
         return DummyEmbedding()
 
-    # prefer sentence-transformers if available
+    # embeddings enabled: try to load sentence-transformers model
     if embedding_functions is not None:
         try:
-            return embedding_functions.SentenceTransformersEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-        except Exception:
+            logger.debug("Loading SentenceTransformerEmbeddingFunction for all-MiniLM-L6-v2")
+            return embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        except Exception as e:
+            logger.exception("Failed to load SentenceTransformerEmbeddingFunction: %s", e)
             try:
-                return embedding_functions.SentenceTransformersEmbeddingFunction(model_name="sentence-transformers/all-MiniLM-L6-v2")
-            except Exception:
+                return embedding_functions.SentenceTransformerEmbeddingFunction(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            except Exception as e2:
+                logger.exception("Fallback also failed: %s", e2)
                 return DummyEmbedding()
+    logger.warning("embedding_functions not available; using DummyEmbedding")
     return DummyEmbedding()
 
 

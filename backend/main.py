@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
 import os
+import logging
+from contextlib import asynccontextmanager
 
 # ensure working dir is project root so relative "frontend" references from other modules resolve
 project_root = Path(__file__).resolve().parent.parent
@@ -15,7 +17,21 @@ from data.fetch_market import fetch_ohlcv_data
 from utils import cache as cache_utils
 import asyncio
 
-app = FastAPI()
+logger = logging.getLogger("crypto-sentinel")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+	"""Lifespan context manager for startup and shutdown events."""
+	# Startup: download embedding models and preload market data
+	await download_embedding_models_if_needed()
+	await preload_market_data()
+	yield
+	# Shutdown: cleanup if needed
+	pass
+
+
+app = FastAPI(lifespan=lifespan)
 
 # During local development allow the Next.js dev server to call the API
 app.add_middleware(
@@ -41,7 +57,42 @@ app.include_router(technical.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 
 
-@app.on_event("startup")
+async def download_embedding_models_if_needed():
+	"""Download embedding models on first startup if EMBEDDINGS_ENABLED is true."""
+	try:
+		from config import EMBEDDINGS_ENABLED, CACHE_DIR
+		import os
+		
+		if not EMBEDDINGS_ENABLED:
+			logger.info("Embeddings disabled; skipping model download")
+			return
+		
+		# Check if model is already cached
+		hf_home = os.environ.get("HF_HOME", os.path.join(CACHE_DIR, "huggingface"))
+		model_path = os.path.join(hf_home, "hub", "models--sentence-transformers--all-MiniLM-L6-v2")
+		
+		if os.path.exists(model_path):
+			logger.info("Embedding model already cached; skipping download")
+			return
+		
+		logger.info("Downloading embedding model (all-MiniLM-L6-v2) on first startup...")
+		loop = asyncio.get_event_loop()
+		
+		def load_model():
+			from chromadb.utils import embedding_functions
+			emb = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+			# Test the model by calling __call__ which is the embedding method
+			test = emb(["test"])
+			logger.info(f"Embedding model loaded successfully (dimension: {len(test[0])})")
+			return emb
+		
+		await loop.run_in_executor(None, load_model)
+		logger.info("Embedding model download complete")
+	except Exception as e:
+		logger.exception(f"Failed to download embedding models: {e}")
+		# Don't block startup if model download fails
+
+
 async def preload_market_data():
 	"""Preload OHLCV for BTC and ETH into the in-memory cache on startup."""
 	try:
