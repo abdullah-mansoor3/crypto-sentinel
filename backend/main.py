@@ -12,8 +12,9 @@ project_root = Path(__file__).resolve().parent.parent
 os.chdir(project_root)
 
 # import routes after changing cwd so their StaticFiles(... "frontend") can find the directory
-from routes import market, technical, agents
+from routes import market, technical, agents, quant
 from data.fetch_market import fetch_ohlcv_data
+from data.fetch_news import start_prune_scheduler
 from utils import cache as cache_utils
 import asyncio
 
@@ -23,9 +24,15 @@ logger = logging.getLogger("crypto-sentinel")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 	"""Lifespan context manager for startup and shutdown events."""
-	# Startup: download embedding models and preload market data
+	# Startup: download embedding models, preload market data, start schedulers
 	await download_embedding_models_if_needed()
 	await preload_market_data()
+	# Start news pruning scheduler (runs daily in background)
+	try:
+		start_prune_scheduler(interval_hours=24)
+		logger.info("News pruning scheduler started")
+	except Exception as e:
+		logger.warning("Failed to start news pruning scheduler: %s", e)
 	yield
 	# Shutdown: cleanup if needed
 	pass
@@ -54,6 +61,7 @@ app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend"
 # Include API routes
 app.include_router(market.router, prefix="/api")
 app.include_router(technical.router, prefix="/api")
+app.include_router(quant.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 
 

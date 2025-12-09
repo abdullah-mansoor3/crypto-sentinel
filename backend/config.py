@@ -15,3 +15,18 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # Set environment variables for persistent caching to avoid re-downloading models
 os.environ.setdefault("HF_HOME", os.path.join(CACHE_DIR, "huggingface"))
 os.environ.setdefault("CHROMA_CACHE_DIR", os.path.join(CACHE_DIR, "chroma_models"))
+
+# -----------------------------------------------------------------------------
+# Cache TTL thresholds (in seconds unless noted)
+# -----------------------------------------------------------------------------
+# Market OHLCV cache TTL (CoinGecko disk cache freshness threshold)
+MARKET_CACHE_TTL_SECONDS = int(os.getenv("MARKET_CACHE_TTL_SECONDS", 3600))  # 1 hour
+
+# Technical indicators cache TTL
+TECHNICAL_CACHE_TTL_SECONDS = int(os.getenv("TECHNICAL_CACHE_TTL_SECONDS", 600))  # 10 minutes
+
+# News staleness threshold (hours)
+NEWS_STALE_HOURS = int(os.getenv("NEWS_STALE_HOURS", 6))
+
+# News pruning interval (days)
+NEWS_PRUNE_DAYS = int(os.getenv("NEWS_PRUNE_DAYS", 30))

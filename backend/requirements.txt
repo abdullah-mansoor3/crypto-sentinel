@@ -132,3 +132,6 @@ xxhash==3.6.0
 yfinance==0.2.66
 zipp==3.23.0
 zstandard==0.25.0
+transformers>=4.35.0
+torch>=2.0.0
+scipy>=1.10.0
