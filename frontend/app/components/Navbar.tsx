@@ -10,6 +10,7 @@ const navItems = [
   { href: '/quant', label: 'Quant Finance', icon: '📈' },
   { href: '/sentiment', label: 'Sentiment', icon: '💬' },
   { href: '/ai', label: 'AI Analysis', icon: '🤖' },
+  { href: '/learn', label: 'I dont understand a thing', icon: '🎓' },
 ];
 
 export default function Navbar() {
