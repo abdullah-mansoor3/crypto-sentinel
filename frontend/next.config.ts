@@ -1,17 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  async rewrites() {
-    // In development, proxy root and frontend static assets to the backend
-    if (process.env.NODE_ENV === 'development') {
-      return [
-        { source: '/', destination: 'http://localhost:8000/' },
-        { source: '/frontend/:path*', destination: 'http://localhost:8000/frontend/:path*' },
-      ];
-    }
-    return [];
-  },
+  // We serve the Next.js app directly; backend requests should use NEXT_PUBLIC_API_URL
+  // so we no longer proxy the root to the FastAPI server.
 };
 
 export default nextConfig;

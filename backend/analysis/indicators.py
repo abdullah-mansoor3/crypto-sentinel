@@ -39,7 +39,7 @@ def bollinger_bands(series: pd.Series, window: int = 20, num_std: int = 2) -> pd
 	return pd.DataFrame({"mid": mid, "upper": upper, "lower": lower})
 
 
-def compute_all_indicators(df: pd.DataFrame, ema_periods: List[int] = [10, 20, 50],
+def compute_all_indicators(df: pd.DataFrame, ema_periods: List[int] = [20, 50, 100, 200],
 						   macd_params: Dict = None, rsi_period: int = 14,
 						   bb_window: int = 20, bb_std: int = 2) -> Dict:
 	"""Compute a set of indicators and return them as JSON-serializable lists keyed by name.

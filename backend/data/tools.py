@@ -281,7 +281,7 @@ def get_raw_ta_indicators(
     from analysis import indicators as ind
     
     if ema_periods is None:
-        ema_periods = [10, 20, 50]
+        ema_periods = [20, 50, 100, 200]
     if macd_params is None:
         macd_params = {"fast": 12, "slow": 26, "signal": 9}
     

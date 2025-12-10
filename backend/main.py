@@ -12,7 +12,7 @@ project_root = Path(__file__).resolve().parent.parent
 os.chdir(project_root)
 
 # import routes after changing cwd so their StaticFiles(... "frontend") can find the directory
-from routes import market, technical, agents, quant
+from routes import market, technical, agents, quant, about
 from data.fetch_market import fetch_ohlcv_data
 from data.fetch_news import start_prune_scheduler
 from utils import cache as cache_utils
@@ -63,6 +63,7 @@ app.include_router(market.router, prefix="/api")
 app.include_router(technical.router, prefix="/api")
 app.include_router(quant.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
+app.include_router(about.router, prefix="/api")
 
 
 async def download_embedding_models_if_needed():
