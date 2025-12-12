@@ -1,139 +1,279 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import CoinSelector from '../components/CoinSelector';
 import StatusPill from '../components/StatusPill';
 import LoadingSpinner from '../components/LoadingSpinner';
 
-interface AgentResponse {
+// Types for the multi-agent analysis
+interface ProgressUpdate {
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'agent_complete' | 'final' | 'error' | 'complete';
   agent: string;
-  result: {
-    analysis?: string;
-    recommendation?: string;
-    confidence?: number;
-    signals?: Array<{
-      indicator: string;
-      signal: string;
-      value: number;
-    }>;
-    summary?: string;
-    risk_level?: string;
-    [key: string]: unknown;
-  };
+  message: string;
+  data?: Record<string, unknown>;
+  timestamp: string;
+}
+
+interface IndicatorSignal {
+  indicator: string;
+  value: number;
+  signal: 'bullish' | 'bearish' | 'neutral';
+  description: string;
+}
+
+interface KeyLevel {
+  level_type: 'support' | 'resistance';
+  price: number;
+  strength: 'strong' | 'moderate' | 'weak';
+}
+
+interface NewsEvent {
+  title: string;
+  sentiment: 'positive' | 'negative' | 'neutral';
+  sentiment_score: number;
+  source?: string;
+  published_at?: string;
+}
+
+interface ReturnMetrics {
+  total_return: number;
+  annualized_return: number;
+  daily_avg_return: number;
+  best_day: number;
+  worst_day: number;
+}
+
+interface RiskMetrics {
+  volatility: number;
+  sharpe_ratio: number;
+  sortino_ratio: number;
+  max_drawdown: number;
+  var_95: number;
+  cvar_95: number;
+}
+
+interface NewsAnalysis {
+  sentiment_summary: string;
+  avg_sentiment_score: number;
+  overall_sentiment: 'bullish' | 'bearish' | 'neutral';
+  top_events: NewsEvent[];
+  news_count: number;
+}
+
+interface TechnicalAnalysis {
+  trend_summary: string;
+  overall_trend: 'bullish' | 'bearish' | 'neutral' | 'mixed';
+  key_levels: KeyLevel[];
+  indicator_signals: IndicatorSignal[];
+  current_price: number;
+  price_change_pct: number;
+}
+
+interface QuantAnalysis {
+  risk_summary: string;
+  risk_level: 'low' | 'moderate' | 'high' | 'extreme';
+  return_metrics: ReturnMetrics;
+  risk_metrics: RiskMetrics;
+  risk_reward_assessment: string;
+}
+
+interface AgentThought {
+  agent: string;
+  thought: string;
+  timestamp: string;
+}
+
+interface OrchestratorResult {
+  final_analysis: string;
+  recommendation: 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+  confidence: number;
+  risk_level: 'low' | 'moderate' | 'high' | 'extreme';
+  news_analysis?: NewsAnalysis;
+  technical_analysis?: TechnicalAnalysis;
+  quant_analysis?: QuantAnalysis;
+  thought_process: AgentThought[];
+  coin: string;
+  analysis_timestamp: string;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-
-const agents = [
-  {
-    id: 'technical',
-    name: 'Technical Analyst',
-    icon: '📊',
-    description: 'Analyzes price charts, patterns, and technical indicators',
-    color: 'cyan',
-  },
-  {
-    id: 'sentiment',
-    name: 'Sentiment Analyst',
-    icon: '💬',
-    description: 'Evaluates market sentiment from news and social media',
-    color: 'pink',
-  },
-  {
-    id: 'quant',
-    name: 'Quant Analyst',
-    icon: '📈',
-    description: 'Computes risk metrics and quantitative signals',
-    color: 'purple',
-  },
-  {
-    id: 'orchestrator',
-    name: 'Master Orchestrator',
-    icon: '🎯',
-    description: 'Combines all analyses for comprehensive insights',
-    color: 'green',
-  },
-];
+const WS_BASE = API_BASE.replace(/^http/, 'ws');
 
 export default function AIPage() {
   const [coin, setCoin] = useState('BTC');
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
-  const [response, setResponse] = useState<AgentResponse | null>(null);
+  const [progress, setProgress] = useState<ProgressUpdate[]>([]);
+  const [result, setResult] = useState<OrchestratorResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [chatHistory, setChatHistory] = useState<Array<{ role: 'user' | 'ai'; content: string; agent?: string }>>([]);
+  const [activeTab, setActiveTab] = useState<'progress' | 'news' | 'technical' | 'quant' | 'summary'>('progress');
+  
+  const wsRef = useRef<WebSocket | null>(null);
+  const progressEndRef = useRef<HTMLDivElement>(null);
 
-  async function runAgent(agentId: string) {
+  // Auto-scroll progress panel
+  useEffect(() => {
+    if (progressEndRef.current) {
+      progressEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [progress]);
+
+  // Cleanup WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
+  const runAnalysis = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setSelectedAgent(agentId);
+    setProgress([]);
+    setResult(null);
+    setActiveTab('progress');
 
-    const userMessage = `Analyze ${coin} using ${agents.find(a => a.id === agentId)?.name}`;
-    setChatHistory(prev => [...prev, { role: 'user', content: userMessage }]);
-
+    // Try WebSocket first for streaming
     try {
-      const res = await fetch(`${API_BASE}/api/agents/run`, {
+      const ws = new WebSocket(`${WS_BASE}/api/agents/ws/analyze`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          coin: coin,
+          days: days,
+          include_news: true,
+          include_technical: true,
+          include_quant: true
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data: ProgressUpdate = JSON.parse(event.data);
+          
+          if (data.type === 'complete') {
+            setResult(data.data as unknown as OrchestratorResult);
+            setLoading(false);
+            setActiveTab('summary');
+            ws.close();
+          } else if (data.type === 'error') {
+            setError(data.message);
+            setLoading(false);
+          } else {
+            setProgress(prev => [...prev, data]);
+          }
+        } catch (e) {
+          console.error('Failed to parse WebSocket message:', e);
+        }
+      };
+
+      ws.onerror = () => {
+        // Fallback to HTTP if WebSocket fails
+        ws.close();
+        runAnalysisHttp();
+      };
+
+      ws.onclose = () => {
+        wsRef.current = null;
+      };
+
+    } catch {
+      // Fallback to HTTP
+      runAnalysisHttp();
+    }
+  }, [coin, days]);
+
+  const runAnalysisHttp = async () => {
+    try {
+      setProgress(prev => [...prev, {
+        type: 'thinking',
+        agent: 'System',
+        message: 'Falling back to HTTP request (no streaming)...',
+        timestamp: new Date().toISOString()
+      }]);
+
+      const res = await fetch(`${API_BASE}/api/agents/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: agentId, symbol: coin }),
+        body: JSON.stringify({
+          coin: coin,
+          days: days,
+          include_news: true,
+          include_technical: true,
+          include_quant: true
+        }),
       });
 
-      if (!res.ok) throw new Error('Failed to run agent');
+      if (!res.ok) throw new Error('Analysis request failed');
+      
       const data = await res.json();
-      setResponse(data);
-
-      // Format AI response
-      const aiContent = formatAgentResponse(data);
-      setChatHistory(prev => [...prev, { role: 'ai', content: aiContent, agent: agentId }]);
+      
+      if (data.success && data.data) {
+        setResult(data.data as OrchestratorResult);
+        setActiveTab('summary');
+      } else {
+        throw new Error(data.error || 'Analysis failed');
+      }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-      setError(errorMsg);
-      setChatHistory(prev => [...prev, { role: 'ai', content: `Error: ${errorMsg}`, agent: agentId }]);
+      setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  function formatAgentResponse(data: AgentResponse): string {
-    const result = data.result;
-    let formatted = '';
+  const clearResults = () => {
+    setProgress([]);
+    setResult(null);
+    setError(null);
+    setActiveTab('progress');
+  };
 
-    if (result.analysis) {
-      formatted += result.analysis + '\n\n';
+  const getRecommendationColor = (rec: string) => {
+    switch (rec) {
+      case 'strong_buy': return 'text-green-400';
+      case 'buy': return 'text-green-300';
+      case 'hold': return 'text-yellow-400';
+      case 'sell': return 'text-red-300';
+      case 'strong_sell': return 'text-red-400';
+      default: return 'text-gray-400';
     }
+  };
 
-    if (result.signals && result.signals.length > 0) {
-      formatted += '**Signals:**\n';
-      result.signals.forEach(s => {
-        formatted += `• ${s.indicator}: ${s.signal} (${s.value})\n`;
-      });
-      formatted += '\n';
+  const getRecommendationBg = (rec: string) => {
+    switch (rec) {
+      case 'strong_buy': return 'bg-green-500/20 border-green-500/50';
+      case 'buy': return 'bg-green-500/10 border-green-500/30';
+      case 'hold': return 'bg-yellow-500/10 border-yellow-500/30';
+      case 'sell': return 'bg-red-500/10 border-red-500/30';
+      case 'strong_sell': return 'bg-red-500/20 border-red-500/50';
+      default: return 'bg-gray-500/10 border-gray-500/30';
     }
+  };
 
-    if (result.recommendation) {
-      formatted += `**Recommendation:** ${result.recommendation}\n`;
+  const formatRecommendation = (rec: string) => {
+    return rec.replace('_', ' ').toUpperCase();
+  };
+
+  const getAgentIcon = (agent: string) => {
+    if (agent.includes('News')) return '📰';
+    if (agent.includes('Technical')) return '📊';
+    if (agent.includes('Quant')) return '📈';
+    if (agent.includes('Orchestrator')) return '🎯';
+    return '🤖';
+  };
+
+  const getProgressTypeColor = (type: string) => {
+    switch (type) {
+      case 'thinking': return 'text-cyan-400';
+      case 'tool_call': return 'text-purple-400';
+      case 'tool_result': return 'text-green-400';
+      case 'agent_complete': return 'text-emerald-400';
+      case 'error': return 'text-red-400';
+      default: return 'text-gray-400';
     }
-
-    if (result.confidence) {
-      formatted += `**Confidence:** ${(result.confidence * 100).toFixed(0)}%\n`;
-    }
-
-    if (result.risk_level) {
-      formatted += `**Risk Level:** ${result.risk_level}\n`;
-    }
-
-    if (result.summary) {
-      formatted += `\n${result.summary}`;
-    }
-
-    return formatted || JSON.stringify(result, null, 2);
-  }
-
-  function clearChat() {
-    setChatHistory([]);
-    setResponse(null);
-    setSelectedAgent(null);
-  }
+  };
 
   return (
     <div className="min-h-screen grid-pattern">
@@ -144,19 +284,21 @@ export default function AIPage() {
             <h1 className="text-3xl font-bold mb-2">
               <span className="neon-text-green">AI</span> Analysis
             </h1>
-            <p className="text-gray-400">Autonomous agents powered by advanced language models</p>
+            <p className="text-gray-400">Multi-agent orchestrator powered by LLM</p>
           </div>
           
           <div className="flex items-center gap-4">
             <CoinSelector selectedCoin={coin} onCoinChange={setCoin} />
-            {chatHistory.length > 0 && (
-              <button
-                onClick={clearChat}
-                className="px-4 py-2 bg-[#1e293b] text-gray-400 rounded-lg hover:text-gray-200 transition-colors"
-              >
-                Clear Chat
-              </button>
-            )}
+            <select
+              value={days}
+              onChange={(e) => setDays(parseInt(e.target.value))}
+              className="px-3 py-2 bg-[#0d1117] border border-[#1e293b] rounded-lg text-gray-200 text-sm"
+            >
+              <option value={7}>7 days</option>
+              <option value={30}>30 days</option>
+              <option value={90}>90 days</option>
+              <option value={180}>180 days</option>
+            </select>
           </div>
         </div>
 
@@ -167,172 +309,424 @@ export default function AIPage() {
           </div>
         )}
 
+        {/* Main Content */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Agent Selection */}
-          <div className="lg:col-span-1 fade-in-delay-1">
-            <h2 className="text-lg font-semibold text-gray-200 mb-4">Select Agent</h2>
-            <div className="space-y-3">
-              {agents.map((agent) => (
+          {/* Left Panel - Controls & Progress */}
+          <div className="lg:col-span-1 space-y-6 fade-in-delay-1">
+            {/* Run Analysis Card */}
+            <div className="neon-card p-6">
+              <h2 className="text-lg font-semibold text-gray-200 mb-4 flex items-center gap-2">
+                🎯 Master Orchestrator
+              </h2>
+              <p className="text-sm text-gray-400 mb-4">
+                Runs 3 specialized AI agents to analyze {coin}:
+              </p>
+              <ul className="text-sm text-gray-500 mb-6 space-y-2">
+                <li className="flex items-center gap-2">
+                  <span className="text-cyan-400">📰</span> News Sentiment Agent
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="text-purple-400">📊</span> Technical Analysis Agent
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="text-pink-400">📈</span> Quantitative Metrics Agent
+                </li>
+              </ul>
+              
+              <button
+                onClick={runAnalysis}
+                disabled={loading}
+                className="w-full neon-btn neon-btn-green py-3 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <LoadingSpinner size="sm" />
+                    Analyzing...
+                  </span>
+                ) : (
+                  '🚀 Run Full Analysis'
+                )}
+              </button>
+
+              {(progress.length > 0 || result) && (
                 <button
-                  key={agent.id}
-                  onClick={() => runAgent(agent.id)}
-                  disabled={loading}
-                  className={`w-full p-4 rounded-lg text-left transition-all ${
-                    selectedAgent === agent.id
-                      ? agent.color === 'cyan' ? 'bg-cyan-500/20 border-cyan-500/50' :
-                        agent.color === 'pink' ? 'bg-pink-500/20 border-pink-500/50' :
-                        agent.color === 'purple' ? 'bg-purple-500/20 border-purple-500/50' :
-                        'bg-green-500/20 border-green-500/50'
-                      : 'bg-[#0d1117] hover:bg-[#1e293b]'
-                  } border ${
-                    selectedAgent === agent.id ? '' : 'border-[#1e293b] hover:border-gray-600'
-                  } ${loading && selectedAgent === agent.id ? 'animate-pulse' : ''}`}
+                  onClick={clearResults}
+                  className="w-full mt-3 px-4 py-2 bg-[#1e293b] text-gray-400 rounded-lg hover:text-gray-200 transition-colors text-sm"
                 >
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="text-2xl">{agent.icon}</span>
-                    <span className={`font-semibold ${
-                      selectedAgent === agent.id
-                        ? agent.color === 'cyan' ? 'text-cyan-400' :
-                          agent.color === 'pink' ? 'text-pink-400' :
-                          agent.color === 'purple' ? 'text-purple-400' :
-                          'text-green-400'
-                        : 'text-gray-200'
-                    }`}>
-                      {agent.name}
-                    </span>
-                    {loading && selectedAgent === agent.id && (
-                      <LoadingSpinner size="sm" />
-                    )}
-                  </div>
-                  <p className="text-sm text-gray-400">{agent.description}</p>
+                  Clear Results
                 </button>
-              ))}
+              )}
             </div>
 
-            {/* Quick Actions */}
-            <div className="mt-6">
-              <h3 className="text-sm font-medium text-gray-400 mb-3">Quick Actions</h3>
-              <div className="space-y-2">
-                <button
-                  onClick={() => runAgent('orchestrator')}
-                  disabled={loading}
-                  className="w-full neon-btn neon-btn-green text-sm py-3"
-                >
-                  🎯 Run Full Analysis
-                </button>
+            {/* Progress Stream */}
+            {progress.length > 0 && (
+              <div className="neon-card p-4">
+                <h3 className="text-sm font-medium text-gray-400 mb-3">Agent Progress</h3>
+                <div className="max-h-[300px] overflow-y-auto space-y-2 text-xs">
+                  {progress.map((p, i) => (
+                    <div key={i} className="flex items-start gap-2 pb-2 border-b border-[#1e293b] last:border-0">
+                      <span>{getAgentIcon(p.agent)}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className={`font-medium ${getProgressTypeColor(p.type)}`}>
+                          {p.agent}
+                        </div>
+                        <div className="text-gray-400 truncate">{p.message}</div>
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={progressEndRef} />
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Chat / Response Area */}
+          {/* Right Panel - Results */}
           <div className="lg:col-span-2 fade-in-delay-2">
-            <div className="neon-card h-[600px] flex flex-col">
-              {/* Chat Header */}
-              <div className="p-4 border-b border-[#1e293b]">
-                <h2 className="text-lg font-semibold text-gray-200">
-                  Analysis Results
-                </h2>
-                <p className="text-sm text-gray-500">
-                  Select an agent to analyze {coin}
-                </p>
-              </div>
+            <div className="neon-card min-h-[600px] flex flex-col">
+              {/* Tabs */}
+              {result && (
+                <div className="flex border-b border-[#1e293b]">
+                  {['summary', 'news', 'technical', 'quant'].map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setActiveTab(tab as typeof activeTab)}
+                      className={`px-4 py-3 text-sm font-medium transition-colors ${
+                        activeTab === tab
+                          ? 'text-cyan-400 border-b-2 border-cyan-400'
+                          : 'text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      {tab === 'summary' && '📋 Summary'}
+                      {tab === 'news' && '📰 News'}
+                      {tab === 'technical' && '📊 Technical'}
+                      {tab === 'quant' && '📈 Quant'}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-              {/* Chat Messages */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {chatHistory.length === 0 ? (
+              {/* Content */}
+              <div className="flex-1 overflow-y-auto p-6">
+                {!result && !loading && (
                   <div className="h-full flex items-center justify-center">
                     <div className="text-center">
                       <div className="text-6xl mb-4">🤖</div>
-                      <p className="text-gray-400 mb-2">No analysis yet</p>
+                      <p className="text-gray-400 mb-2">Ready to analyze {coin}</p>
                       <p className="text-sm text-gray-500">
-                        Select an agent from the left panel to start analyzing {coin}
+                        Click &quot;Run Full Analysis&quot; to start the multi-agent pipeline
                       </p>
                     </div>
                   </div>
-                ) : (
-                  chatHistory.map((msg, index) => (
-                    <div
-                      key={index}
-                      className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                    >
-                      <div
-                        className={`max-w-[80%] p-4 rounded-lg ${
-                          msg.role === 'user'
-                            ? 'bg-cyan-500/20 border border-cyan-500/30'
-                            : 'bg-[#1e293b]'
-                        }`}
-                      >
-                        {msg.role === 'ai' && msg.agent && (
-                          <div className="flex items-center gap-2 mb-2">
-                            <span>{agents.find(a => a.id === msg.agent)?.icon}</span>
-                            <span className="text-xs text-gray-400">
-                              {agents.find(a => a.id === msg.agent)?.name}
-                            </span>
+                )}
+
+                {loading && !result && (
+                  <div className="h-full flex items-center justify-center">
+                    <div className="text-center">
+                      <LoadingSpinner size="lg" />
+                      <p className="mt-4 text-gray-400">Agents are analyzing {coin}...</p>
+                      <p className="text-sm text-gray-500 mt-2">Watch the progress panel for updates</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Summary Tab */}
+                {result && activeTab === 'summary' && (
+                  <div className="space-y-6">
+                    {/* Recommendation Badge */}
+                    <div className={`p-4 rounded-lg border ${getRecommendationBg(result.recommendation)}`}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm text-gray-400 mb-1">Recommendation</div>
+                          <div className={`text-2xl font-bold ${getRecommendationColor(result.recommendation)}`}>
+                            {formatRecommendation(result.recommendation)}
                           </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-sm text-gray-400 mb-1">Confidence</div>
+                          <div className="text-2xl font-bold text-gray-200">
+                            {(result.confidence * 100).toFixed(0)}%
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex gap-4">
+                        <StatusPill status={result.risk_level} text={`${result.risk_level} risk`} />
+                        {result.technical_analysis && (
+                          <span className="text-sm text-gray-400">
+                            Price: ${result.technical_analysis.current_price.toLocaleString()}
+                          </span>
                         )}
-                        <div className="text-sm text-gray-200 whitespace-pre-wrap">
-                          {msg.content.split('\n').map((line, i) => {
-                            if (line.startsWith('**') && line.endsWith('**')) {
-                              return (
-                                <p key={i} className="font-semibold text-cyan-400 mt-2">
-                                  {line.replace(/\*\*/g, '')}
-                                </p>
-                              );
-                            }
-                            if (line.startsWith('•')) {
-                              return (
-                                <p key={i} className="text-gray-300 ml-2">
-                                  {line}
-                                </p>
-                              );
-                            }
-                            return <p key={i}>{line}</p>;
-                          })}
+                      </div>
+                    </div>
+
+                    {/* Final Analysis */}
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-200 mb-3">Analysis Summary</h3>
+                      <div className="text-gray-300 leading-relaxed whitespace-pre-wrap">
+                        {result.final_analysis}
+                      </div>
+                    </div>
+
+                    {/* Key Metrics */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {result.technical_analysis && (
+                        <>
+                          <div className="bg-[#1e293b]/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Trend</div>
+                            <div className={`text-lg font-semibold ${
+                              result.technical_analysis.overall_trend === 'bullish' ? 'text-green-400' :
+                              result.technical_analysis.overall_trend === 'bearish' ? 'text-red-400' :
+                              'text-yellow-400'
+                            }`}>
+                              {result.technical_analysis.overall_trend.toUpperCase()}
+                            </div>
+                          </div>
+                          <div className="bg-[#1e293b]/50 rounded-lg p-3">
+                            <div className="text-xs text-gray-400">Price Change</div>
+                            <div className={`text-lg font-semibold ${
+                              result.technical_analysis.price_change_pct >= 0 ? 'text-green-400' : 'text-red-400'
+                            }`}>
+                              {result.technical_analysis.price_change_pct >= 0 ? '+' : ''}
+                              {result.technical_analysis.price_change_pct.toFixed(2)}%
+                            </div>
+                          </div>
+                        </>
+                      )}
+                      {result.news_analysis && (
+                        <div className="bg-[#1e293b]/50 rounded-lg p-3">
+                          <div className="text-xs text-gray-400">Sentiment</div>
+                          <div className={`text-lg font-semibold ${
+                            result.news_analysis.overall_sentiment === 'bullish' ? 'text-green-400' :
+                            result.news_analysis.overall_sentiment === 'bearish' ? 'text-red-400' :
+                            'text-yellow-400'
+                          }`}>
+                            {result.news_analysis.overall_sentiment.toUpperCase()}
+                          </div>
+                        </div>
+                      )}
+                      {result.quant_analysis && (
+                        <div className="bg-[#1e293b]/50 rounded-lg p-3">
+                          <div className="text-xs text-gray-400">Sharpe Ratio</div>
+                          <div className="text-lg font-semibold text-cyan-400">
+                            {result.quant_analysis.risk_metrics.sharpe_ratio.toFixed(2)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* News Tab */}
+                {result && activeTab === 'news' && result.news_analysis && (
+                  <div className="space-y-6">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-200 mb-2">Sentiment Summary</h3>
+                      <p className="text-gray-300">{result.news_analysis.sentiment_summary}</p>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="bg-[#1e293b]/50 rounded-lg p-3 text-center">
+                        <div className="text-xs text-gray-400">Overall</div>
+                        <div className={`text-lg font-semibold ${
+                          result.news_analysis.overall_sentiment === 'bullish' ? 'text-green-400' :
+                          result.news_analysis.overall_sentiment === 'bearish' ? 'text-red-400' :
+                          'text-yellow-400'
+                        }`}>
+                          {result.news_analysis.overall_sentiment.toUpperCase()}
+                        </div>
+                      </div>
+                      <div className="bg-[#1e293b]/50 rounded-lg p-3 text-center">
+                        <div className="text-xs text-gray-400">Score</div>
+                        <div className="text-lg font-semibold text-cyan-400">
+                          {(result.news_analysis.avg_sentiment_score * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="bg-[#1e293b]/50 rounded-lg p-3 text-center">
+                        <div className="text-xs text-gray-400">Articles</div>
+                        <div className="text-lg font-semibold text-gray-200">
+                          {result.news_analysis.news_count}
                         </div>
                       </div>
                     </div>
-                  ))
+
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-200 mb-3">Top Events</h3>
+                      <div className="space-y-3">
+                        {result.news_analysis.top_events.map((event, i) => (
+                          <div key={i} className="bg-[#1e293b]/30 rounded-lg p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <p className="text-gray-300 text-sm flex-1">{event.title}</p>
+                              <StatusPill 
+                                status={event.sentiment === 'positive' ? 'bullish' : event.sentiment === 'negative' ? 'bearish' : 'neutral'}
+                                text={`${(event.sentiment_score * 100).toFixed(0)}%`}
+                              />
+                            </div>
+                            {event.source && (
+                              <div className="text-xs text-gray-500 mt-1">{event.source}</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 )}
 
-                {loading && (
-                  <div className="flex justify-start">
-                    <div className="bg-[#1e293b] p-4 rounded-lg">
-                      <div className="flex items-center gap-2">
-                        <LoadingSpinner size="sm" />
-                        <span className="text-sm text-gray-400">Analyzing...</span>
+                {/* Technical Tab */}
+                {result && activeTab === 'technical' && result.technical_analysis && (
+                  <div className="space-y-6">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-200 mb-2">Trend Summary</h3>
+                      <p className="text-gray-300">{result.technical_analysis.trend_summary}</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="bg-[#1e293b]/50 rounded-lg p-3 text-center">
+                        <div className="text-xs text-gray-400">Current Price</div>
+                        <div className="text-lg font-semibold text-cyan-400">
+                          ${result.technical_analysis.current_price.toLocaleString()}
+                        </div>
                       </div>
+                      <div className="bg-[#1e293b]/50 rounded-lg p-3 text-center">
+                        <div className="text-xs text-gray-400">Change</div>
+                        <div className={`text-lg font-semibold ${
+                          result.technical_analysis.price_change_pct >= 0 ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {result.technical_analysis.price_change_pct >= 0 ? '+' : ''}
+                          {result.technical_analysis.price_change_pct.toFixed(2)}%
+                        </div>
+                      </div>
+                      <div className="bg-[#1e293b]/50 rounded-lg p-3 text-center">
+                        <div className="text-xs text-gray-400">Trend</div>
+                        <div className={`text-lg font-semibold ${
+                          result.technical_analysis.overall_trend === 'bullish' ? 'text-green-400' :
+                          result.technical_analysis.overall_trend === 'bearish' ? 'text-red-400' :
+                          'text-yellow-400'
+                        }`}>
+                          {result.technical_analysis.overall_trend.toUpperCase()}
+                        </div>
+                      </div>
+                      <div className="bg-[#1e293b]/50 rounded-lg p-3 text-center">
+                        <div className="text-xs text-gray-400">Signals</div>
+                        <div className="text-lg font-semibold text-gray-200">
+                          {result.technical_analysis.indicator_signals.length}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Key Levels */}
+                    {result.technical_analysis.key_levels.length > 0 && (
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-200 mb-3">Key Levels</h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          {result.technical_analysis.key_levels.map((level, i) => (
+                            <div key={i} className={`rounded-lg p-3 ${
+                              level.level_type === 'resistance' 
+                                ? 'bg-red-500/10 border border-red-500/30' 
+                                : 'bg-green-500/10 border border-green-500/30'
+                            }`}>
+                              <div className="text-xs text-gray-400 mb-1">
+                                {level.level_type.charAt(0).toUpperCase() + level.level_type.slice(1)} ({level.strength})
+                              </div>
+                              <div className={`text-xl font-semibold ${
+                                level.level_type === 'resistance' ? 'text-red-400' : 'text-green-400'
+                              }`}>
+                                ${level.price.toLocaleString()}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Indicator Signals */}
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-200 mb-3">Indicator Signals</h3>
+                      <div className="space-y-2">
+                        {result.technical_analysis.indicator_signals.map((signal, i) => (
+                          <div key={i} className="bg-[#1e293b]/30 rounded-lg p-3 flex items-center justify-between">
+                            <div>
+                              <div className="font-medium text-gray-200">{signal.indicator}</div>
+                              <div className="text-sm text-gray-400">{signal.description}</div>
+                            </div>
+                            <StatusPill 
+                              status={signal.signal}
+                              text={signal.value.toFixed(2)}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Quant Tab */}
+                {result && activeTab === 'quant' && result.quant_analysis && (
+                  <div className="space-y-6">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-200 mb-2">Risk Summary</h3>
+                      <p className="text-gray-300">{result.quant_analysis.risk_summary}</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-[#1e293b]/50 rounded-lg p-4">
+                        <h4 className="text-sm font-medium text-gray-400 mb-3">Return Metrics</h4>
+                        <div className="space-y-2">
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Total Return</span>
+                            <span className={`font-medium ${
+                              result.quant_analysis.return_metrics.total_return >= 0 ? 'text-green-400' : 'text-red-400'
+                            }`}>
+                              {result.quant_analysis.return_metrics.total_return >= 0 ? '+' : ''}
+                              {result.quant_analysis.return_metrics.total_return.toFixed(2)}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Annualized</span>
+                            <span className="text-gray-200">
+                              {result.quant_analysis.return_metrics.annualized_return >= 0 ? '+' : ''}
+                              {result.quant_analysis.return_metrics.annualized_return.toFixed(2)}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Best Day</span>
+                            <span className="text-green-400">+{result.quant_analysis.return_metrics.best_day.toFixed(2)}%</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Worst Day</span>
+                            <span className="text-red-400">{result.quant_analysis.return_metrics.worst_day.toFixed(2)}%</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-[#1e293b]/50 rounded-lg p-4">
+                        <h4 className="text-sm font-medium text-gray-400 mb-3">Risk Metrics</h4>
+                        <div className="space-y-2">
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Volatility</span>
+                            <span className="text-gray-200">{result.quant_analysis.risk_metrics.volatility.toFixed(2)}%</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Sharpe Ratio</span>
+                            <span className="text-cyan-400">{result.quant_analysis.risk_metrics.sharpe_ratio.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Max Drawdown</span>
+                            <span className="text-red-400">{result.quant_analysis.risk_metrics.max_drawdown.toFixed(2)}%</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">VaR (95%)</span>
+                            <span className="text-gray-200">{result.quant_analysis.risk_metrics.var_95.toFixed(2)}%</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-200 mb-2">Risk/Reward Assessment</h3>
+                      <p className="text-gray-300">{result.quant_analysis.risk_reward_assessment}</p>
                     </div>
                   </div>
                 )}
               </div>
-
-              {/* Response Summary */}
-              {response && !loading && (
-                <div className="p-4 border-t border-[#1e293b] bg-[#0d1117]/50">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                      {response.result.recommendation && (
-                        <StatusPill 
-                          status={
-                            response.result.recommendation.toLowerCase().includes('buy') ? 'bullish' :
-                            response.result.recommendation.toLowerCase().includes('sell') ? 'bearish' :
-                            'neutral'
-                          }
-                          text={response.result.recommendation}
-                        />
-                      )}
-                      {response.result.risk_level && (
-                        <StatusPill status={response.result.risk_level} />
-                      )}
-                    </div>
-                    {response.result.confidence && (
-                      <span className="text-sm text-gray-400">
-                        Confidence: {(response.result.confidence * 100).toFixed(0)}%
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>

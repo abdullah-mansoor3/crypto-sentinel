@@ -43,7 +43,7 @@ app = FastAPI(lifespan=lifespan)
 # During local development allow the Next.js dev server to call the API
 app.add_middleware(
 	CORSMiddleware,
-	allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+	allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000"],
 	allow_credentials=True,
 	allow_methods=["*"],
 	allow_headers=["*"],
@@ -62,7 +62,7 @@ app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend"
 app.include_router(market.router, prefix="/api")
 app.include_router(technical.router, prefix="/api")
 app.include_router(quant.router, prefix="/api")
-app.include_router(agents.router, prefix="/api")
+app.include_router(agents.router, prefix="/api/agents")
 app.include_router(about.router, prefix="/api")
 
 

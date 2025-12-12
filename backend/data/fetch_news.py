@@ -295,12 +295,17 @@ def compute_sentiment(text: str, use_cache: bool = True) -> Tuple[str, float]:
         result = _compute_sentiment_lexicon(text)
     else:
         try:
-            # cardiffnlp/twitter-roberta-base-sentiment returns:
-            # [{'label': 'LABEL_0', 'score': 0.xx}, {'label': 'LABEL_1', 'score': 0.xx}, {'label': 'LABEL_2', 'score': 0.xx}]
+            # cardiffnlp/twitter-roberta-base-sentiment with top_k=None returns:
+            # [[{'label': 'LABEL_0', 'score': 0.xx}, {'label': 'LABEL_1', 'score': 0.xx}, {'label': 'LABEL_2', 'score': 0.xx}]]
+            # Note: It's a list of lists when top_k=None
             # LABEL_0 = negative, LABEL_1 = neutral, LABEL_2 = positive
-            outputs = pipe(cleaned, truncation=True)
+            outputs = pipe(cleaned, truncation=True, max_length=512)
             
-            # outputs is a list of dicts with label and score
+            # Handle nested list structure from top_k=None
+            if outputs and isinstance(outputs[0], list):
+                outputs = outputs[0]
+            
+            # outputs is now a list of dicts with label and score
             # Extract probabilities for each class
             probs = {item["label"]: item["score"] for item in outputs}
             
