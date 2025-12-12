@@ -2,19 +2,21 @@
 Main Orchestrator Agent for multi-agent crypto analysis pipeline.
 
 This agent:
-1. Runs a ReACT-style loop
-2. Calls specialized sub-agents as tools
-3. Aggregates their summaries
-4. Produces the final comprehensive analysis
+1. Runs a true ReACT-style loop
+2. Dynamically chooses which agents to call based on LLM reasoning
+3. Receives observations from agent calls
+4. Continues looping until all needed analysis is done
+5. Aggregates results and produces final analysis
 """
 
 import logging
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Literal
 from datetime import datetime, timezone
 import json
+import re
 
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain_core.tools import tool, StructuredTool
 from pydantic import BaseModel
 
@@ -43,46 +45,196 @@ logger = logging.getLogger("crypto-sentinel.orchestrator")
 
 
 # =============================================================================
-# ORCHESTRATOR SYSTEM PROMPT
+# ORCHESTRATOR SYSTEM PROMPT FOR ReACT LOOP
 # =============================================================================
 
-ORCHESTRATOR_SYSTEM_PROMPT = """You are the Master Orchestrator Agent for crypto analysis.
-You coordinate specialized agents to provide comprehensive market analysis.
+ORCHESTRATOR_SYSTEM_PROMPT = """You are the Master Orchestrator Agent for cryptocurrency analysis.
+You have access to specialized agents and must use a ReACT-style loop to analyze crypto markets.
 
-Your role is to:
-1. Call the appropriate sub-agents based on the user's request
-2. Synthesize their findings into a unified analysis
-3. Provide a clear recommendation with confidence level
+## Your Role
+1. Use Thought-Action-Observation loops to coordinate analysis
+2. Decide which agents to call based on what analysis is needed
+3. Synthesize findings into a comprehensive recommendation
 
-Available agents:
-- News Sentiment Agent: Analyzes recent news and market sentiment
-- Technical Analysis Agent: Analyzes price patterns and technical indicators
-- Quantitative Metrics Agent: Analyzes risk metrics and returns
+## Available Agents (Tools)
+- news_sentiment: Analyzes news sentiment and market sentiment
+- technical_analysis: Analyzes price patterns and technical indicators
+- quantitative_metrics: Analyzes risk metrics, volatility, and returns
 
-Guidelines:
-- Be objective and balanced in your final analysis
-- Acknowledge uncertainty when signals conflict
-- Never make price predictions - focus on risk/reward assessment
-- Clearly explain your reasoning
-- Provide actionable insights
+## Agent Status Tracking
+Keep track of which agents have been called:
+- News Sentiment Agent: Provides market sentiment, news impact, overall bullish/bearish/neutral stance
+- Technical Analysis Agent: Provides trend analysis, indicator signals, support/resistance levels
+- Quantitative Metrics Agent: Provides risk assessment, Sharpe ratio, Sortino ratio, VaR, drawdowns
 
-Recommendation scale:
-- strong_buy: Multiple strong bullish signals, favorable risk/reward
-- buy: Bullish signals outweigh bearish, acceptable risk
-- hold: Mixed signals or insufficient data, maintain position
-- sell: Bearish signals outweigh bullish, elevated risk
-- strong_sell: Multiple strong bearish signals, unfavorable risk/reward
+## ReACT Loop Format
+Use the following format for each loop iteration:
+
+Thought: [Explain what analysis is needed, what you've learned so far, and which agent to call next]
+Action: [Agent name you are calling]
+Observation: [The result from the agent call - you will receive this]
+
+## When to Stop Looping
+Call the STOP action when:
+- All required agents have been executed (news, technical, quant)
+- You have enough information to synthesize a recommendation
+- You're ready to generate the final analysis
+
+## Guidelines
+- Always be systematic in your analysis
+- Call all available agents for comprehensive analysis
+- Start with news sentiment, then technical, then quant
+- Use observations to inform subsequent analysis
+- Never make price predictions; focus on risk/reward assessment
+- Be objective and acknowledge uncertainty
+- When stopping, summarize what you learned from each agent
+
+## Recommendation Criteria
+- strong_buy: Multiple bullish signals, excellent risk/reward, sentiment positive
+- buy: Bullish bias, acceptable risk, mixed to positive signals
+- hold: Mixed signals, unclear direction, need more data
+- sell: Bearish bias, elevated risk, negative signals
+- strong_sell: Multiple bearish signals, poor risk/reward, negative sentiment
 """
 
 
 # =============================================================================
-# ORCHESTRATOR AGENT
+# AGENT TOOLS DEFINITIONS
+# =============================================================================
+
+class AgentToolCall(BaseModel):
+    """Represents a tool call to an agent."""
+    agent: Literal["news_sentiment", "technical_analysis", "quantitative_metrics"]
+    parameters: Dict[str, Any]
+
+
+def create_agent_tools():
+    """Create tool wrappers for sub-agents."""
+    
+    @tool
+    def news_sentiment(coin: str) -> str:
+        """
+        Call the News Sentiment Agent to analyze market sentiment from news articles.
+        
+        Args:
+            coin: Cryptocurrency symbol (e.g., 'BTC', 'ETH')
+        
+        Returns:
+            JSON string with sentiment analysis results
+        """
+        try:
+            news_input = NewsAgentInput(coin=coin)
+            result = run_news_agent(news_input, progress_callback=None)
+            return json.dumps({
+                "status": "success",
+                "overall_sentiment": result.overall_sentiment,
+                "avg_sentiment_score": result.avg_sentiment_score,
+                "summary": result.sentiment_summary,
+                "articles_analyzed": result.news_count,
+                "top_events": [
+                    {
+                        "title": e.title,
+                        "sentiment": e.sentiment,
+                        "score": e.sentiment_score
+                    }
+                    for e in result.top_events[:3]
+                ]
+            })
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+    
+    @tool
+    def technical_analysis(coin: str, days: int = 30) -> str:
+        """
+        Call the Technical Analysis Agent to analyze price patterns and indicators.
+        
+        Args:
+            coin: Cryptocurrency symbol (e.g., 'BTC', 'ETH')
+            days: Number of days for analysis (default: 30)
+        
+        Returns:
+            JSON string with technical analysis results
+        """
+        try:
+            tech_input = TechnicalAgentInput(coin=coin, days=days)
+            result = run_technical_agent(tech_input, progress_callback=None)
+            return json.dumps({
+                "status": "success",
+                "overall_trend": result.overall_trend,
+                "current_price": result.current_price,
+                "price_change_pct": result.price_change_pct,
+                "summary": result.trend_summary,
+                "signals": [
+                    {
+                        "indicator": s.indicator,
+                        "value": s.value,
+                        "signal": s.signal,
+                        "description": s.description
+                    }
+                    for s in result.indicator_signals
+                ],
+                "key_levels": [
+                    {
+                        "type": l.level_type,
+                        "price": l.price,
+                        "strength": l.strength
+                    }
+                    for l in result.key_levels
+                ]
+            })
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+    
+    @tool
+    def quantitative_metrics(coin: str, days: int = 30) -> str:
+        """
+        Call the Quantitative Metrics Agent to analyze risk and return metrics.
+        
+        Args:
+            coin: Cryptocurrency symbol (e.g., 'BTC', 'ETH')
+            days: Number of days for analysis (default: 30)
+        
+        Returns:
+            JSON string with quantitative analysis results
+        """
+        try:
+            quant_input = QuantAgentInput(coin=coin, days=days)
+            result = run_quant_agent(quant_input, progress_callback=None)
+            return json.dumps({
+                "status": "success",
+                "risk_level": result.risk_level,
+                "summary": result.risk_summary,
+                "returns": {
+                    "total": result.return_metrics.total_return,
+                    "annualized": result.return_metrics.annualized_return,
+                    "daily_avg": result.return_metrics.daily_avg_return,
+                    "best_day": result.return_metrics.best_day,
+                    "worst_day": result.return_metrics.worst_day
+                },
+                "risk_metrics": {
+                    "volatility": result.risk_metrics.volatility,
+                    "sharpe_ratio": result.risk_metrics.sharpe_ratio,
+                    "sortino_ratio": result.risk_metrics.sortino_ratio,
+                    "max_drawdown": result.risk_metrics.max_drawdown,
+                    "var_95": result.risk_metrics.var_95,
+                    "cvar_95": result.risk_metrics.cvar_95
+                },
+                "risk_reward_assessment": result.risk_reward_assessment
+            })
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+    
+    return [news_sentiment, technical_analysis, quantitative_metrics]
+
+
+# =============================================================================
+# ORCHESTRATOR AGENT CLASS
 # =============================================================================
 
 class OrchestratorAgent:
     """
-    Main orchestrator that runs a ReACT-style loop,
-    calling sub-agents as tools and aggregating results.
+    Main orchestrator that runs a true ReACT-style loop,
+    dynamically choosing which agents to call based on reasoning.
     """
     
     def __init__(self, progress_callback: Optional[ProgressCallback] = None):
@@ -90,135 +242,185 @@ class OrchestratorAgent:
         self.llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             groq_api_key=GROQ_API_KEY,
-            temperature=0.2,
+            temperature=0.3,  # Slightly higher for reasoning
             max_tokens=4096,
         )
         self.thought_process: List[AgentThought] = []
+        self.agent_results: Dict[str, Any] = {}  # Store results from each agent
+        self.tools = create_agent_tools()
     
-    def _add_thought(self, thought: str):
-        """Record a thought in the reasoning trace."""
+    def _add_thought(self, thought: str, agent: str = "Orchestrator"):
+        """Record a thought in the reasoning trace and broadcast to frontend."""
         agent_thought = AgentThought(
-            agent="Orchestrator",
+            agent=agent,
             thought=thought,
             timestamp=datetime.now(timezone.utc).isoformat()
         )
         self.thought_process.append(agent_thought)
         make_progress(
             "thinking",
-            "Orchestrator",
+            agent,
             thought,
             callback=self.progress_callback
         )
     
+    def _broadcast_action(self, action: str):
+        """Broadcast action to frontend."""
+        make_progress(
+            "tool_call",
+            "Orchestrator",
+            f"Calling {action}...",
+            {"agent": action},
+            self.progress_callback
+        )
+    
     def run(self, input_data: OrchestratorInput) -> OrchestratorOutput:
         """
-        Run the orchestrator agent.
+        Run the orchestrator agent with a true ReACT loop.
         
-        This implements a simplified ReACT pattern:
-        1. Plan: Determine which agents to call
-        2. Act: Call each sub-agent
-        3. Observe: Collect and validate results
-        4. Reflect: Synthesize findings
-        5. Respond: Generate final analysis
+        The loop:
+        1. LLM thinks about what to do next
+        2. LLM decides which agent to call
+        3. Agent is executed
+        4. Result is fed back as observation
+        5. Loop continues until STOP is called
         """
         self.thought_process = []
+        self.agent_results = {}
         
         try:
-            # Phase 1: Planning
-            self._add_thought(f"Starting analysis for {input_data.coin}")
-            self._add_thought("Planning analysis pipeline based on configuration...")
-            
-            agents_to_run = []
-            if input_data.include_news:
-                agents_to_run.append("news")
-            if input_data.include_technical:
-                agents_to_run.append("technical")
-            if input_data.include_quant:
-                agents_to_run.append("quant")
-            
-            self._add_thought(f"Will run {len(agents_to_run)} sub-agents: {', '.join(agents_to_run)}")
-            
-            # Phase 2: Execute sub-agents
-            news_result: Optional[NewsAgentOutput] = None
-            technical_result: Optional[TechnicalAgentOutput] = None
-            quant_result: Optional[QuantAgentOutput] = None
-            
-            # Run News Agent
-            if input_data.include_news:
-                self._add_thought("Calling News Sentiment Agent...")
-                make_progress(
-                    "tool_call",
-                    "Orchestrator",
-                    "Invoking News Sentiment Agent",
-                    {"agent": "news"},
-                    self.progress_callback
-                )
-                
-                news_input = NewsAgentInput(coin=input_data.coin)
-                news_result = run_news_agent(news_input, self.progress_callback)
-                
-                self._add_thought(f"News analysis complete: {news_result.overall_sentiment} sentiment")
-                
-                # Record sub-agent thoughts
-                self.thought_process.append(AgentThought(
-                    agent="News Sentiment Agent",
-                    thought=f"Overall sentiment: {news_result.overall_sentiment}, Score: {news_result.avg_sentiment_score:.2f}",
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                ))
-            
-            # Run Technical Agent
-            if input_data.include_technical:
-                self._add_thought("Calling Technical Analysis Agent...")
-                make_progress(
-                    "tool_call",
-                    "Orchestrator",
-                    "Invoking Technical Analysis Agent",
-                    {"agent": "technical"},
-                    self.progress_callback
-                )
-                
-                technical_input = TechnicalAgentInput(coin=input_data.coin, days=input_data.days)
-                technical_result = run_technical_agent(technical_input, self.progress_callback)
-                
-                self._add_thought(f"Technical analysis complete: {technical_result.overall_trend} trend")
-                
-                self.thought_process.append(AgentThought(
-                    agent="Technical Analysis Agent",
-                    thought=f"Overall trend: {technical_result.overall_trend}, Price: ${technical_result.current_price:,.2f}",
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                ))
-            
-            # Run Quant Agent
-            if input_data.include_quant:
-                self._add_thought("Calling Quantitative Metrics Agent...")
-                make_progress(
-                    "tool_call",
-                    "Orchestrator",
-                    "Invoking Quantitative Metrics Agent",
-                    {"agent": "quant"},
-                    self.progress_callback
-                )
-                
-                quant_input = QuantAgentInput(coin=input_data.coin, days=input_data.days)
-                quant_result = run_quant_agent(quant_input, self.progress_callback)
-                
-                self._add_thought(f"Quant analysis complete: {quant_result.risk_level} risk")
-                
-                self.thought_process.append(AgentThought(
-                    agent="Quantitative Metrics Agent",
-                    thought=f"Risk level: {quant_result.risk_level}, Sharpe: {quant_result.risk_metrics.sharpe_ratio:.2f}",
-                    timestamp=datetime.now(timezone.utc).isoformat()
-                ))
-            
-            # Phase 3: Synthesize results
-            self._add_thought("Synthesizing results from all agents...")
-            make_progress(
-                "thinking",
-                "Orchestrator",
-                "Generating final analysis...",
-                callback=self.progress_callback
+            self._add_thought(
+                f"Starting comprehensive analysis for {input_data.coin} with {input_data.days} days of data"
             )
             
+            # Initialize message history for ReACT loop
+            messages: List[BaseMessage] = [
+                SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT)
+            ]
+            
+            # Initial prompt with available agents and what to analyze
+            initial_prompt = f"""Analyze {input_data.coin} and provide a comprehensive investment analysis.
+
+Available analysis modes:
+- News Sentiment: {input_data.include_news}
+- Technical Analysis: {input_data.include_technical}
+- Quantitative Metrics: {input_data.include_quant}
+
+Use the ReACT loop to analyze the cryptocurrency. Call all available agents in a logical order.
+Format each step as:
+Thought: [your reasoning]
+Action: [agent name]
+
+Agent names: news_sentiment, technical_analysis, quantitative_metrics
+When done, use: Action: STOP"""
+            
+            messages.append(HumanMessage(content=initial_prompt))
+            
+            # ReACT Loop
+            max_iterations = 10  # Prevent infinite loops
+            iteration = 0
+            
+            while iteration < max_iterations:
+                iteration += 1
+                self._add_thought(f"ReACT Loop iteration {iteration}")
+                
+                # Get LLM response
+                response = self.llm.invoke(messages)
+                response_text = response.content.strip()
+                
+                self._add_thought(f"LLM reasoning:\n{response_text}", agent="Orchestrator-ReACT")
+                
+                # Add LLM response to message history
+                messages.append(AIMessage(content=response_text))
+                
+                # Parse action from response
+                action_match = re.search(r"Action:\s*([^\n]+)", response_text, re.IGNORECASE)
+                
+                if not action_match:
+                    self._add_thought("Could not parse action from LLM response, stopping loop")
+                    break
+                
+                action = action_match.group(1).strip().lower()
+                
+                # Check for STOP
+                if "stop" in action:
+                    self._add_thought("All analysis complete, synthesizing final recommendation")
+                    break
+                
+                # Execute agent based on action
+                observation = None
+                
+                if action == "news_sentiment":
+                    if not input_data.include_news:
+                        observation = json.dumps({"status": "skipped", "reason": "News analysis disabled"})
+                    elif "news_sentiment" not in self.agent_results:
+                        self._broadcast_action("News Sentiment Agent")
+                        observation = self.tools[0].invoke({"coin": input_data.coin})
+                        self.agent_results["news_sentiment"] = json.loads(observation)
+                        self._add_thought(f"News Sentiment Agent executed")
+                    else:
+                        observation = json.dumps({"status": "already_executed", "reason": "Already called this agent"})
+                
+                elif action == "technical_analysis":
+                    if not input_data.include_technical:
+                        observation = json.dumps({"status": "skipped", "reason": "Technical analysis disabled"})
+                    elif "technical_analysis" not in self.agent_results:
+                        self._broadcast_action("Technical Analysis Agent")
+                        observation = self.tools[1].invoke({"coin": input_data.coin, "days": input_data.days})
+                        self.agent_results["technical_analysis"] = json.loads(observation)
+                        self._add_thought(f"Technical Analysis Agent executed")
+                    else:
+                        observation = json.dumps({"status": "already_executed", "reason": "Already called this agent"})
+                
+                elif action == "quantitative_metrics":
+                    if not input_data.include_quant:
+                        observation = json.dumps({"status": "skipped", "reason": "Quantitative analysis disabled"})
+                    elif "quantitative_metrics" not in self.agent_results:
+                        self._broadcast_action("Quantitative Metrics Agent")
+                        observation = self.tools[2].invoke({"coin": input_data.coin, "days": input_data.days})
+                        self.agent_results["quantitative_metrics"] = json.loads(observation)
+                        self._add_thought(f"Quantitative Metrics Agent executed")
+                    else:
+                        observation = json.dumps({"status": "already_executed", "reason": "Already called this agent"})
+                
+                else:
+                    observation = json.dumps({"status": "error", "message": f"Unknown agent: {action}"})
+                
+                # Add observation to message history
+                if observation:
+                    messages.append(HumanMessage(content=f"Observation: {observation}"))
+            
+            # After ReACT loop: convert stored results to agent output objects
+            news_result = None
+            technical_result = None
+            quant_result = None
+            
+            # Reconstruct typed outputs from stored results
+            if "news_sentiment" in self.agent_results and self.agent_results["news_sentiment"].get("status") == "success":
+                try:
+                    raw = self.agent_results["news_sentiment"]
+                    # Call agent again to get typed output (simpler than reconstructing)
+                    news_input = NewsAgentInput(coin=input_data.coin)
+                    news_result = run_news_agent(news_input, self.progress_callback)
+                except:
+                    pass
+            
+            if "technical_analysis" in self.agent_results and self.agent_results["technical_analysis"].get("status") == "success":
+                try:
+                    tech_input = TechnicalAgentInput(coin=input_data.coin, days=input_data.days)
+                    technical_result = run_technical_agent(tech_input, self.progress_callback)
+                except:
+                    pass
+            
+            if "quantitative_metrics" in self.agent_results and self.agent_results["quantitative_metrics"].get("status") == "success":
+                try:
+                    quant_input = QuantAgentInput(coin=input_data.coin, days=input_data.days)
+                    quant_result = run_quant_agent(quant_input, self.progress_callback)
+                except:
+                    pass
+            
+            # Synthesize final analysis
+            self._add_thought("Synthesizing all findings into final recommendation")
             final_output = self._synthesize_analysis(
                 input_data,
                 news_result,
@@ -238,6 +440,7 @@ class OrchestratorAgent:
             
         except Exception as e:
             logger.exception("Orchestrator error")
+            self._add_thought(f"Error occurred: {str(e)}")
             make_progress(
                 "error",
                 "Orchestrator",
@@ -245,7 +448,6 @@ class OrchestratorAgent:
                 callback=self.progress_callback
             )
             
-            # Return error output
             return OrchestratorOutput(
                 final_analysis=f"Error during analysis: {str(e)}",
                 recommendation="hold",
